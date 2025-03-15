@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Last Tab",
+  "version": "1.0",
+  "description": "Quickly return to your last active tab",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "tabs",
+    "windows"
+  ],
+  "commands": {
+    "switch-to-last-tab": {
+      "suggested_key": {
+        "default": "Ctrl+B",
+        "mac": "MacCtrl+B"
+      },
+      "description": "Switch to the last active tab"
+    }
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+} 
