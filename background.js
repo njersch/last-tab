@@ -1,21 +1,36 @@
-// Store the stack of recently visited tabs
-let recentTabs = [];
-const MAX_HISTORY = 10; // Store up to 10 recent tabs
+// Maximum number of tabs to remember
+const MAX_HISTORY = 20; 
+const RECENT_TABS_KEY = 'recentTabs';
+
+// Getter function for recent tabs
+function getRecentTabs() {
+  return chrome.storage.local.get(RECENT_TABS_KEY).then(result => result[RECENT_TABS_KEY] || []);
+}
+
+// Setter function for recent tabs
+function setRecentTabs(tabs) {
+  chrome.storage.local.set({ [RECENT_TABS_KEY]: tabs });
+}
 
 // Function to push a tab to our recent tabs stack
 function trackTab(tabId, windowId) {
-  // Don't track the same tab twice in a row
-  if (recentTabs.length > 0 && recentTabs[0].tabId === tabId) {
-    return;
-  }
-  
-  // Add the current tab to the front of the array
-  recentTabs.unshift({ tabId, windowId });
-  
-  // Keep array at maximum length
-  if (recentTabs.length > MAX_HISTORY) {
-    recentTabs.pop();
-  }
+  getRecentTabs().then(recentTabs => {
+    // Don't track the same tab twice in a row
+    if (recentTabs.length > 0 && recentTabs[0].tabId === tabId) {
+      return;
+    }
+    
+    // Add the current tab to the front of the array
+    recentTabs.unshift({ tabId, windowId });
+    
+    // Keep array at maximum length
+    if (recentTabs.length > MAX_HISTORY) {
+      recentTabs = recentTabs.slice(0, MAX_HISTORY);
+    }
+    
+    // Save updated tabs
+    setRecentTabs(recentTabs);
+  });
 }
 
 // Track when the active tab changes within the same window
@@ -38,7 +53,12 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 // Handle when a tab is closed to remove it from our tracking
 chrome.tabs.onRemoved.addListener((tabId) => {
-  recentTabs = recentTabs.filter(tab => tab.tabId !== tabId);
+  getRecentTabs().then(recentTabs => {
+    if (!recentTabs || recentTabs.length === 0) return;
+    
+    const updatedTabs = recentTabs.filter(tab => tab.tabId !== tabId);
+    setRecentTabs(updatedTabs);
+  });
 });
 
 // Listen for the keyboard shortcut
@@ -50,27 +70,32 @@ chrome.commands.onCommand.addListener((command) => {
 
 // Function to switch to the last tab
 function switchToLastTab() {
-  // Skip the current tab (index 0) and get the previous tab (index 1)
-  if (recentTabs.length < 2) {
-    console.log("No previous tab to switch to");
-    return;
-  }
-  
-  const previousTab = recentTabs[1];
-  
-  // Check if the tab still exists
-  chrome.tabs.get(previousTab.tabId, (tab) => {
-    if (chrome.runtime.lastError) {
-      // Tab doesn't exist anymore, remove it and try again
-      recentTabs = recentTabs.filter(tab => tab.tabId !== previousTab.tabId);
-      switchToLastTab();
+  getRecentTabs().then(recentTabs => {
+    // Check if we have at least two tabs in history
+    if (recentTabs.length < 2) {
+      console.log("No previous tab to switch to");
       return;
     }
     
-    // Focus the window if needed
-    chrome.windows.update(previousTab.windowId, { focused: true }, () => {
-      // Then activate the tab
-      chrome.tabs.update(previousTab.tabId, { active: true });
+    const previousTab = recentTabs[1];
+    
+    // Check if the tab still exists
+    chrome.tabs.get(previousTab.tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        // Tab doesn't exist anymore, remove it and try again
+        const updatedTabs = recentTabs.filter(tab => tab.tabId !== previousTab.tabId);
+        setRecentTabs(updatedTabs).then(() => {
+          // After saving, try again
+          switchToLastTab();
+        });
+        return;
+      }
+      
+      // Focus the window if needed
+      chrome.windows.update(previousTab.windowId, { focused: true }, () => {
+        // Then activate the tab
+        chrome.tabs.update(previousTab.tabId, { active: true });
+      });
     });
   });
 } 

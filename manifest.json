@@ -8,7 +8,8 @@
   },
   "permissions": [
     "tabs",
-    "windows"
+    "windows",
+    "storage"
   ],
   "commands": {
     "switch-to-last-tab": {
