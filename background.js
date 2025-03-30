@@ -9,7 +9,7 @@ function getRecentTabs() {
 
 // Setter function for recent tabs
 function setRecentTabs(tabs) {
-  chrome.storage.local.set({ [RECENT_TABS_KEY]: tabs });
+  return chrome.storage.local.set({ [RECENT_TABS_KEY]: tabs });
 }
 
 // Function to push a tab to our recent tabs stack
