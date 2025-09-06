@@ -69,33 +69,39 @@ chrome.commands.onCommand.addListener((command) => {
 });
 
 // Function to switch to the last tab
-function switchToLastTab() {
-  getRecentTabs().then(recentTabs => {
-    // Check if we have at least two tabs in history
-    if (recentTabs.length < 2) {
-      console.log("No previous tab to switch to");
-      return;
-    }
+async function switchToLastTab() {
+
+  // Check if any window is focused
+  const windows = await chrome.windows.getAll();
+  const hasFocusedWindow = windows.some(window => window.focused);
+
+  // If a window is focused, we want to switch to the tab before the focused tab.
+  // If no window is focused, we want to switch to the most recently focused tab.
+  const desiredTabIndex = hasFocusedWindow ? 1 : 0;
+
+  const recentTabs = await getRecentTabs();
+  
+  // Check if we have enough tabs in history.
+  if (recentTabs.length < desiredTabIndex + 1) {
+    console.log("No previous tab to switch to");
+    return;
+  }
+  
+  const previousTab = recentTabs[desiredTabIndex];
+  
+  // Check if the tab still exists.
+  // If not, remove it from recent tabs and try again.
+  try {
+    await chrome.tabs.get(previousTab.tabId);
+  } catch (error) {
+    console.log("Tab doesn't exist anymore, remove it and try again");
+    const updatedTabs = recentTabs.filter(tab => tab.tabId !== previousTab.tabId);
+    await setRecentTabs(updatedTabs);
+    switchToLastTab();
+    return;
+  }
     
-    const previousTab = recentTabs[1];
-    
-    // Check if the tab still exists
-    chrome.tabs.get(previousTab.tabId, (tab) => {
-      if (chrome.runtime.lastError) {
-        // Tab doesn't exist anymore, remove it and try again
-        const updatedTabs = recentTabs.filter(tab => tab.tabId !== previousTab.tabId);
-        setRecentTabs(updatedTabs).then(() => {
-          // After saving, try again
-          switchToLastTab();
-        });
-        return;
-      }
-      
-      // Focus the window if needed
-      chrome.windows.update(previousTab.windowId, { focused: true }, () => {
-        // Then activate the tab
-        chrome.tabs.update(previousTab.tabId, { active: true });
-      });
-    });
-  });
-} 
+  // Focus the window if needed, and activate the tab.
+  await chrome.windows.update(previousTab.windowId, { focused: true });
+  await chrome.tabs.update(previousTab.tabId, { active: true });
+}
