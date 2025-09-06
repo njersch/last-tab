@@ -5,6 +5,9 @@ const MAX_HISTORY = 20;
 // ordered from most recent to least recent.
 const RECENT_TABS_KEY = 'recentTabs';
 
+// Threshold for stale tabs in minutes.
+const STALE_TAB_THRESHOLD = 15;
+
 // Getter function for recent tabs.
 function getRecentTabs() {
   return chrome.storage.local.get(RECENT_TABS_KEY).then(result => result[RECENT_TABS_KEY] || []);
@@ -67,6 +70,8 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.commands.onCommand.addListener((command) => {
   if (command === "switch-to-last-tab") {
     switchToLastTab();
+  } else if (command === "close-tabs-without-recent-activity") {
+    closeTabsWithoutRecentActivity();
   }
 });
 
@@ -106,4 +111,27 @@ async function switchToLastTab() {
   // Focus the window if needed, and activate the tab.
   await chrome.windows.update(previousTab.windowId, { focused: true });
   await chrome.tabs.update(previousTab.tabId, { active: true });
+}
+
+// Function to close tabs without recent activity.
+async function closeTabsWithoutRecentActivity() {
+
+  const currentWindow = await chrome.windows.getCurrent();
+
+  if (!currentWindow) {
+    console.log("No window is focused");
+    return;
+  }
+
+  const tabsInWindow = await chrome.tabs.query({ windowId: currentWindow.id });
+
+  const now = Date.now();
+  const staleTabs = tabsInWindow.filter(
+    (tab) =>
+      !tab.pinned &&
+      !tab.active &&
+      tab.lastAccessed + (STALE_TAB_THRESHOLD * 60 * 1000) < now
+  );
+
+  await chrome.tabs.remove(staleTabs.map((tab) => tab.id));
 }

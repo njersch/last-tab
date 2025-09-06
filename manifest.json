@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Last Tab",
   "version": "1.0",
-  "description": "Quickly return to your last active tab",
+  "description": "Quickly return to last active tab and close stale tabs.",
   "background": {
     "service_worker": "background.js"
   },
@@ -14,10 +14,17 @@
   "commands": {
     "switch-to-last-tab": {
       "suggested_key": {
-        "default": "Ctrl+B",
-        "mac": "MacCtrl+B"
+        "default": "Ctrl+Shift+B",
+          "mac": "MacCtrl+B"
+        },
+        "description": "Switch to the last active tab"
       },
-      "description": "Switch to the last active tab"
+    "close-tabs-without-recent-activity": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X",
+        "mac": "MacCtrl+X"
+      },
+      "description": "Close tabs without recent activity"
     }
   },
   "icons": {
