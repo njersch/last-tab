@@ -1,5 +1,8 @@
 // Maximum number of tabs to remember.
 const MAX_HISTORY = 20; 
+
+// Key for property storing IDs of recently visited tabs,
+// ordered from most recent to least recent.
 const RECENT_TABS_KEY = 'recentTabs';
 
 // Getter function for recent tabs.
