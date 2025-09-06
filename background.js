@@ -1,77 +1,76 @@
-// Maximum number of tabs to remember
+// Maximum number of tabs to remember.
 const MAX_HISTORY = 20; 
 const RECENT_TABS_KEY = 'recentTabs';
 
-// Getter function for recent tabs
+// Getter function for recent tabs.
 function getRecentTabs() {
   return chrome.storage.local.get(RECENT_TABS_KEY).then(result => result[RECENT_TABS_KEY] || []);
 }
 
-// Setter function for recent tabs
+// Setter function for recent tabs.
 function setRecentTabs(tabs) {
   return chrome.storage.local.set({ [RECENT_TABS_KEY]: tabs });
 }
 
-// Function to push a tab to our recent tabs stack
-function trackTab(tabId, windowId) {
-  getRecentTabs().then(recentTabs => {
-    // Don't track the same tab twice in a row
-    if (recentTabs.length > 0 && recentTabs[0].tabId === tabId) {
-      return;
-    }
-    
-    // Add the current tab to the front of the array
-    recentTabs.unshift({ tabId, windowId });
-    
-    // Keep array at maximum length
-    if (recentTabs.length > MAX_HISTORY) {
-      recentTabs = recentTabs.slice(0, MAX_HISTORY);
-    }
-    
-    // Save updated tabs
-    setRecentTabs(recentTabs);
-  });
+// Function to push a tab to our recent tabs stack.
+async function trackTab(tabId, windowId) {
+
+  let recentTabs = await getRecentTabs();
+
+  // Don't track the same tab twice in a row.
+  if (recentTabs.length > 0 && recentTabs[0].tabId === tabId) {
+    return;
+  }
+  
+  // Add the current tab to the front of the array.
+  recentTabs.unshift({ tabId, windowId });
+  
+  // Keep array at maximum length.
+  if (recentTabs.length > MAX_HISTORY) {
+    recentTabs = recentTabs.slice(0, MAX_HISTORY);
+  }
+  
+  // Save updated tabs.
+  setRecentTabs(recentTabs);
 }
 
-// Track when the active tab changes within the same window
+// Track when the active tab changes within the same window.
 chrome.tabs.onActivated.addListener((activeInfo) => {
   trackTab(activeInfo.tabId, activeInfo.windowId);
 });
 
-// Track when the user switches between windows
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  // windowId will be chrome.windows.WINDOW_ID_NONE if the focus left Chrome
+// Track when the user switches between windows.
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  // windowId will be chrome.windows.WINDOW_ID_NONE if the focus left Chrome.
   if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    // Get the active tab in the newly focused window
-    chrome.tabs.query({ active: true, windowId: windowId }, (tabs) => {
-      if (tabs && tabs.length > 0) {
-        trackTab(tabs[0].id, windowId);
-      }
-    });
+    // Get the active tab in the newly focused window.
+    const tabs = await chrome.tabs.query({ active: true, windowId: windowId });
+    if (tabs && tabs.length > 0) {
+      await trackTab(tabs[0].id, windowId);
+    }
   }
 });
 
-// Handle when a tab is closed to remove it from our tracking
-chrome.tabs.onRemoved.addListener((tabId) => {
-  getRecentTabs().then(recentTabs => {
-    if (!recentTabs || recentTabs.length === 0) return;
-    
-    const updatedTabs = recentTabs.filter(tab => tab.tabId !== tabId);
-    setRecentTabs(updatedTabs);
-  });
+// Handle when a tab is closed to remove it from our tracking.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const recentTabs = await getRecentTabs();
+  if (!recentTabs || recentTabs.length === 0) return;
+  
+  const updatedTabs = recentTabs.filter(tab => tab.tabId !== tabId);
+  await setRecentTabs(updatedTabs);
 });
 
-// Listen for the keyboard shortcut
+// Listen for the keyboard shortcut.
 chrome.commands.onCommand.addListener((command) => {
   if (command === "switch-to-last-tab") {
     switchToLastTab();
   }
 });
 
-// Function to switch to the last tab
+// Function to switch to the last tab.
 async function switchToLastTab() {
 
-  // Check if any window is focused
+  // Check if any window is focused.
   const windows = await chrome.windows.getAll();
   const hasFocusedWindow = windows.some(window => window.focused);
 
