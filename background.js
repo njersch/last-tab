@@ -128,8 +128,9 @@ async function closeTabsWithoutRecentActivity() {
   const now = Date.now();
   const staleTabs = tabsInWindow.filter(
     (tab) =>
-      !tab.pinned &&
       !tab.active &&
+      !tab.pinned &&
+      (!tab.groupId || tab.groupId < 0) &&
       tab.lastAccessed + (STALE_TAB_THRESHOLD * 60 * 1000) < now
   );
 
