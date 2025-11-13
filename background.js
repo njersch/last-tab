@@ -1,3 +1,6 @@
+import SetQueue from './setQueue.js';
+import KeyPressHandler from './KeyPressHandler.js';
+
 // Maximum number of tabs to remember.
 const MAX_HISTORY = 20; 
 
@@ -5,121 +8,190 @@ const MAX_HISTORY = 20;
 // ordered from most recent to least recent.
 const RECENT_TABS_KEY = 'recentTabs';
 
+// Key for property storing ID of last tab known to be active.
+const LAST_ACTIVE_TAB_KEY = 'lastActiveTab';
+
 // Threshold for stale tabs in minutes.
 const STALE_TAB_THRESHOLD = 15;
 
+
+// ID of the tab that will be made active by this extension.
+// Used to distinguish between a tab being made active by this extension
+// and a tab being made active by the user.
+let tabWillBeMadeActive = null;
+
+
 // Getter function for recent tabs.
-function getRecentTabs() {
-  return chrome.storage.local.get(RECENT_TABS_KEY).then(result => result[RECENT_TABS_KEY] || []);
+async function getRecentTabs() {
+  const result = await chrome.storage.local.get(RECENT_TABS_KEY);
+  const equals = (a, b) => a.tabId === b.tabId;
+  return new SetQueue(result[RECENT_TABS_KEY], equals);
 }
+
 
 // Setter function for recent tabs.
-function setRecentTabs(tabs) {
-  return chrome.storage.local.set({ [RECENT_TABS_KEY]: tabs });
+async function setRecentTabs(tabs) {
+  await chrome.storage.local.set({ [RECENT_TABS_KEY]: tabs.toArray() });
 }
 
-// Function to push a tab to our recent tabs stack.
-async function trackTab(tabId, windowId) {
 
-  let recentTabs = await getRecentTabs();
-
-  // Don't track the same tab twice in a row.
-  if (recentTabs.length > 0 && recentTabs[0].tabId === tabId) {
-    return;
-  }
-  
-  // Add the current tab to the front of the array.
-  recentTabs.unshift({ tabId, windowId });
-  
-  // Keep array at maximum length.
-  if (recentTabs.length > MAX_HISTORY) {
-    recentTabs = recentTabs.slice(0, MAX_HISTORY);
-  }
-  
-  // Save updated tabs.
-  setRecentTabs(recentTabs);
+// Getter function for ID of last active tab.
+async function getLastActiveTab() {
+  const result = await chrome.storage.local.get(LAST_ACTIVE_TAB_KEY);
+  return result[LAST_ACTIVE_TAB_KEY] || null;
 }
 
-// Track when the active tab changes within the same window.
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  trackTab(activeInfo.tabId, activeInfo.windowId);
-});
 
-// Track when the user switches between windows.
-chrome.windows.onFocusChanged.addListener(async (windowId) => {
-  // windowId will be chrome.windows.WINDOW_ID_NONE if the focus left Chrome.
-  if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    // Get the active tab in the newly focused window.
-    const tabs = await chrome.tabs.query({ active: true, windowId: windowId });
-    if (tabs && tabs.length > 0) {
-      await trackTab(tabs[0].id, windowId);
+// Setter function for ID of last active tab.
+async function setLastActiveTab(tabId) {
+  await chrome.storage.local.set({ [LAST_ACTIVE_TAB_KEY]: tabId });
+}
+
+
+// Handler for when the active tab changes.
+async function onTabActivated(tabId) {
+
+  // Ignore if the tab was made active by this extension.
+  if (tabWillBeMadeActive) {
+    const oldTabId = tabWillBeMadeActive;
+    tabWillBeMadeActive = null;
+    if (oldTabId === tabId) {
+      return;
     }
   }
-});
+  
+  const recentTabs = await getRecentTabs();
+  const previouslyActiveTabId = await getLastActiveTab();
+  const previouslyActiveTabIndex = recentTabs.findIndex(tab => tab.tabId === previouslyActiveTabId);
+
+  // Update last active tab.
+  await setLastActiveTab(tabId);
+
+  // If the user switched to a new tab, add the previously active tab
+  // to the front of the queue, and then the current tab in front of it.
+  // This allows the user to switch back between the two tabs by pressing
+  // the shortcut again.
+  if (previouslyActiveTabIndex >= 0) {
+    recentTabs.addFirst(recentTabs.at(previouslyActiveTabIndex));
+  }
+  const tab = await chrome.tabs.get(tabId);
+  recentTabs.addFirst({ tabId, windowId: tab.windowId });
+  
+  // Keep history at maximum length.
+  if (recentTabs.size() > MAX_HISTORY) {
+    recentTabs.removeLast();
+  }
+  
+  // Save updated history.
+  await setRecentTabs(recentTabs);
+}
+
+
+// Handler for when a tab is closed.
+async function onTabRemoved(tabId) {
+  const recentTabs = await getRecentTabs();
+  recentTabs.remove({ tabId });
+  await setRecentTabs(recentTabs);
+}
+
 
 // Handle when a tab is closed to remove it from our tracking.
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const recentTabs = await getRecentTabs();
-  if (!recentTabs || recentTabs.length === 0) return;
+  await onTabRemoved(tabId);
+});
+
+
+// Handle when the active tab changes to update our tracking.
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  await onTabActivated(activeInfo.tabId);
+});
+
+
+// Handle when the user switches between windows.
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
   
-  const updatedTabs = recentTabs.filter(tab => tab.tabId !== tabId);
-  await setRecentTabs(updatedTabs);
+  // Ignore if the focus left Chrome, in which case windowId will
+  // be chrome.windows.WINDOW_ID_NONE.
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    return;
+  }
+
+  // Get the active tab in the newly focused window.
+  const tabs = await chrome.tabs.query({ active: true, windowId: windowId });
+  if (tabs && tabs.length > 0) {
+    await onTabActivated(tabs[0].id);
+  }
 });
 
 // Listen for the keyboard shortcut.
+const keyPressHandler = new KeyPressHandler(
+  () => { switchToLastTab(false); },
+  () => { switchToLastTab(true); }
+);
 chrome.commands.onCommand.addListener((command) => {
-  if (command === "switch-to-last-tab") {
-    switchToLastTab();
-  } else if (command === "close-tabs-without-recent-activity") {
+  if (command === 'switch-to-last-tab') {
+    keyPressHandler.handleKeyPress();
+  } else if (command === 'close-tabs-without-recent-activity') {
     closeTabsWithoutRecentActivity();
   }
 });
 
-// Function to switch to the last tab.
-async function switchToLastTab() {
 
-  // Check if any window is focused.
-  const windows = await chrome.windows.getAll();
-  const hasFocusedWindow = windows.some(window => window.focused);
-
-  // If a window is focused, we want to switch to the tab before the focused tab.
-  // If no window is focused, we want to switch to the most recently focused tab.
-  const desiredTabIndex = hasFocusedWindow ? 1 : 0;
-
+async function switchToLastTab(doublePress) {
+  
   const recentTabs = await getRecentTabs();
-  
-  // Check if we have enough tabs in history.
-  if (recentTabs.length < desiredTabIndex + 1) {
-    console.log("No previous tab to switch to");
+  const lastActiveTabId = await getLastActiveTab();
+  const lastActiveTabIndex = recentTabs.findIndex(tab => tab.tabId === lastActiveTabId);
+
+  // If the last active tab is not in the history, ignore the request.
+  // This should never happen.
+  if (lastActiveTabIndex < 0) {
+    console.error('Last active tab not found in history. Ignoring request.');
     return;
   }
-  
-  const previousTab = recentTabs[desiredTabIndex];
-  
-  // Check if the tab still exists.
-  // If not, remove it from recent tabs and try again.
-  try {
-    await chrome.tabs.get(previousTab.tabId);
-  } catch (error) {
-    console.log("Tab doesn't exist anymore, remove it and try again");
-    const updatedTabs = recentTabs.filter(tab => tab.tabId !== previousTab.tabId);
-    await setRecentTabs(updatedTabs);
-    switchToLastTab();
+
+  // If it's a double press or the current tab is the most recent one,
+  // go to the previous tab in history. Otherwise, go to the most recent tab.
+  let newActiveTabIndex = doublePress || lastActiveTabIndex === 0 ? lastActiveTabIndex + 1 : 0;
+
+  // If the new index is greater than the number of tabs in history,
+  // set it to the oldest tab in history.
+  if (newActiveTabIndex >= recentTabs.size()) {
+    newActiveTabIndex = recentTabs.size() - 1;
+  }
+
+  const newActiveTabId = recentTabs.at(newActiveTabIndex).tabId;
+
+  // If the target tab is not found, remove it from the history and try again.
+  const allTabs = await chrome.tabs.query({});
+  if (allTabs.find(tab => tab.id === newActiveTabId) < 0) {
+    recentTabs.remove({ tabId: newActiveTabId });
+    await setRecentTabs(recentTabs);
+    switchToLastTab(doublePress);
     return;
   }
-    
-  // Focus the window if needed, and activate the tab.
-  await chrome.windows.update(previousTab.windowId, { focused: true });
-  await chrome.tabs.update(previousTab.tabId, { active: true });
+
+  // If it's a single press and we're going forward in history,
+  // move the last active tab to second position in the queue,
+  // and then the new active tab in front of it.
+  if (!doublePress && newActiveTabIndex === 0) {
+    recentTabs.addFirst(recentTabs.at(lastActiveTabIndex));
+    recentTabs.addFirst(recentTabs.at(newActiveTabIndex));
+    await setRecentTabs(recentTabs);
+  }
+
+  // Switch to the target tab.
+  await setLastActiveTab(newActiveTabId);
+  tabWillBeMadeActive = newActiveTabId;
+  chrome.tabs.update(newActiveTabId, { active: true });
 }
 
-// Function to close tabs without recent activity.
+
 async function closeTabsWithoutRecentActivity() {
 
   const currentWindow = await chrome.windows.getCurrent();
 
   if (!currentWindow) {
-    console.log("No window is focused");
     return;
   }
 
