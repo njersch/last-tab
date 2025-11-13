@@ -18,7 +18,7 @@ const STALE_TAB_THRESHOLD = 15;
 // ID of the tab that will be made active by this extension.
 // Used to distinguish between a tab being made active by this extension
 // and a tab being made active by the user.
-let tabWillBeMadeActive = null;
+let tabLastMadeActive = null;
 
 
 // Getter function for recent tabs.
@@ -52,9 +52,8 @@ async function setLastActiveTab(tabId) {
 async function onTabActivated(tabId) {
 
   // Ignore if the tab was made active by this extension.
-  if (tabWillBeMadeActive) {
-    const oldTabId = tabWillBeMadeActive;
-    tabWillBeMadeActive = null;
+  if (tabLastMadeActive) {
+    const oldTabId = tabLastMadeActive;
     if (oldTabId === tabId) {
       return;
     }
@@ -161,10 +160,12 @@ async function switchToLastTab(doublePress) {
   }
 
   const newActiveTabId = recentTabs.at(newActiveTabIndex).tabId;
+  const allTabs = await chrome.tabs.query({});
+  const newActiveTab = allTabs.find(tab => tab.id === newActiveTabId);
 
   // If the target tab is not found, remove it from the history and try again.
-  const allTabs = await chrome.tabs.query({});
-  if (allTabs.find(tab => tab.id === newActiveTabId) < 0) {
+  if (!newActiveTab) {
+    console.error('Target tab not found. Removing from history and trying again.');
     recentTabs.remove({ tabId: newActiveTabId });
     await setRecentTabs(recentTabs);
     switchToLastTab(doublePress);
@@ -182,7 +183,8 @@ async function switchToLastTab(doublePress) {
 
   // Switch to the target tab.
   await setLastActiveTab(newActiveTabId);
-  tabWillBeMadeActive = newActiveTabId;
+  tabLastMadeActive = newActiveTabId;
+  await chrome.windows.update(newActiveTab.windowId, { focused: true });
   chrome.tabs.update(newActiveTabId, { active: true });
 }
 
