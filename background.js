@@ -149,9 +149,21 @@ async function switchToLastTab(doublePress) {
     return;
   }
 
-  // If it's a double press or the current tab is the most recent one,
-  // go to the previous tab in history. Otherwise, go to the most recent tab.
-  let newActiveTabIndex = doublePress || lastActiveTabIndex === 0 ? lastActiveTabIndex + 1 : 0;
+  // Check if any window is focused.
+  const windows = await chrome.windows.getAll();
+  const hasFocusedWindow = windows.some(window => window.focused);
+
+  // If no window is focused, switch to the most recently active tab.
+  // If it's a double press or the current tab is the most recent one in the history,
+  // go back one tab in the history. Otherwise, go back to the front of the history.
+  let newActiveTabIndex;
+  if (!hasFocusedWindow) {
+    newActiveTabIndex = lastActiveTabIndex;
+  } else if (doublePress || lastActiveTabIndex === 0) {
+    newActiveTabIndex = lastActiveTabIndex + 1;
+  } else {
+    newActiveTabIndex = 0;
+  }
 
   // If the new index is greater than the number of tabs in history,
   // set it to the oldest tab in history.
