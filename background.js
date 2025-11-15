@@ -15,12 +15,6 @@ const LAST_ACTIVE_TAB_KEY = 'lastActiveTab';
 const STALE_TAB_THRESHOLD = 15;
 
 
-// ID of the tab that will be made active by this extension.
-// Used to distinguish between a tab being made active by this extension
-// and a tab being made active by the user.
-let tabLastMadeActive = null;
-
-
 // Getter function for recent tabs.
 async function getRecentTabs() {
   const result = await chrome.storage.local.get(RECENT_TABS_KEY);
@@ -51,33 +45,34 @@ async function setLastActiveTab(tabId) {
 // Handler for when the active tab changes.
 async function onTabActivated(tabId) {
 
-  // Ignore if the tab was made active by this extension.
-  if (tabLastMadeActive) {
-    const oldTabId = tabLastMadeActive;
-    if (oldTabId === tabId) {
-      return;
-    }
-  }
-  
-  const recentTabs = await getRecentTabs();
-  const previouslyActiveTabId = await getLastActiveTab();
-  const previouslyActiveTabIndex = recentTabs.findIndex(tab => tab.tabId === previouslyActiveTabId);
+  const lastActiveTab = await getLastActiveTab();
 
-  // Update last active tab.
+  // Don't update the last active tab if it's the same as the current tab.
+  // This prevents processing the same tab twice and processing a tab that was
+  // made active programmatically by this extension.
+  if (lastActiveTab === tabId) {
+    return;
+  }
+
+  // Mark the current tab as last active and to prevent further processing.
   await setLastActiveTab(tabId);
 
+
+  // Update history of recent tabs:
   // If the user switched to a new tab, add the previously active tab
   // to the front of the queue, and then the current tab in front of it.
   // This allows the user to switch back between the two tabs by pressing
   // the shortcut again.
-  if (previouslyActiveTabIndex >= 0) {
-    recentTabs.addFirst(recentTabs.at(previouslyActiveTabIndex));
+  const recentTabs = await getRecentTabs();
+  const lastActiveTabIndex = recentTabs.findIndex(tab => tab.tabId === lastActiveTab);
+  if (lastActiveTabIndex >= 0) {
+    recentTabs.addFirst(recentTabs.at(lastActiveTabIndex));
   }
   const tab = await chrome.tabs.get(tabId);
   recentTabs.addFirst({ tabId, windowId: tab.windowId });
   
-  // Keep history at maximum length.
-  if (recentTabs.size() > MAX_HISTORY) {
+  // Keep history at maximum length by removing the oldest tab if necessary.
+  while (recentTabs.size() > MAX_HISTORY) {
     recentTabs.removeLast();
   }
   
@@ -195,7 +190,6 @@ async function switchToLastTab(doublePress) {
 
   // Switch to the target tab.
   await setLastActiveTab(newActiveTabId);
-  tabLastMadeActive = newActiveTabId;
   await chrome.windows.update(newActiveTab.windowId, { focused: true });
   chrome.tabs.update(newActiveTabId, { active: true });
 }
