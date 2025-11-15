@@ -190,8 +190,12 @@ async function switchToLastTab(doublePress) {
 
   // Switch to the target tab.
   await setLastActiveTab(newActiveTabId);
+
+  // Switch to the target tab and focus the window.
+  // Order is important because updating the window first would cause a random active tab
+  // from the window to be added to the history.
+  await chrome.tabs.update(newActiveTabId, { active: true });
   await chrome.windows.update(newActiveTab.windowId, { focused: true });
-  chrome.tabs.update(newActiveTabId, { active: true });
 }
 
 
