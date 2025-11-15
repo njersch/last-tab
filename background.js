@@ -1,4 +1,4 @@
-import SetQueue from './setQueue.js';
+import SetQueue from './SetQueue.js';
 import KeyPressHandler from './KeyPressHandler.js';
 
 // Maximum number of tabs to remember.
