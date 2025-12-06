@@ -12,7 +12,7 @@ const RECENT_TABS_KEY = 'recentTabs';
 const LAST_ACTIVE_TAB_KEY = 'lastActiveTab';
 
 // Threshold for stale tabs in minutes.
-const STALE_TAB_THRESHOLD = 15;
+const STALE_TAB_THRESHOLD = 5;
 
 
 // Getter function for recent tabs.
