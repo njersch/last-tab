@@ -42,6 +42,17 @@ async function setLastActiveTab(tabId) {
 }
 
 
+// Returns the other tab sharing a split view with the given tab,
+// or null if the tab is not part of a split view.
+async function getSplitViewSibling(tab) {
+  if (tab.splitViewId == null || tab.splitViewId === chrome.tabs.SPLIT_VIEW_ID_NONE) {
+    return null;
+  }
+  const tabsInSplit = await chrome.tabs.query({ splitViewId: tab.splitViewId });
+  return tabsInSplit.find(t => t.id !== tab.id) || null;
+}
+
+
 // Handler for when the active tab changes.
 async function onTabActivated(tabId) {
 
@@ -70,7 +81,14 @@ async function onTabActivated(tabId) {
   }
   const tab = await chrome.tabs.get(tabId);
   recentTabs.addFirst({ tabId, windowId: tab.windowId });
-  
+
+  // Treat a split view as a single tab: keep only the active pane in history
+  // so that switching never lands on the inactive pane of the current split view.
+  const sibling = await getSplitViewSibling(tab);
+  if (sibling) {
+    recentTabs.remove({ tabId: sibling.id });
+  }
+
   // Keep history at maximum length by removing the oldest tab if necessary.
   while (recentTabs.size() > MAX_HISTORY) {
     recentTabs.removeLast();
