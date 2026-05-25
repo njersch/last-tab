@@ -226,15 +226,19 @@ async function closeTabsWithoutRecentActivity() {
   }
 
   const tabsInWindow = await chrome.tabs.query({ windowId: currentWindow.id });
+  const siblings = await Promise.all(tabsInWindow.map(getSplitViewSibling));
 
-  const now = Date.now();
-  const staleTabs = tabsInWindow.filter(
-    (tab) =>
+  const threshold = Date.now() - STALE_TAB_THRESHOLD * 60 * 1000;
+  const staleTabs = tabsInWindow.filter((tab, i) => {
+    const sibling = siblings[i];
+    return (
       !tab.active &&
       !tab.pinned &&
       (!tab.groupId || tab.groupId < 0) &&
-      tab.lastAccessed + (STALE_TAB_THRESHOLD * 60 * 1000) < now
-  );
+      tab.lastAccessed < threshold &&
+      (!sibling || sibling.lastAccessed < threshold)
+    );
+  });
 
   await chrome.tabs.remove(staleTabs.map((tab) => tab.id));
 }
