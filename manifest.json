@@ -26,6 +26,13 @@
         "mac": "MacCtrl+X"
       },
       "description": "Close tabs without recent activity"
+    },
+    "toggle-split-view": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+H",
+        "mac": "MacCtrl+H"
+      },
+      "description": "Create or dissolve a split view"
     }
   },
   "icons": {

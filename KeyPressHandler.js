@@ -9,8 +9,9 @@ export default class KeyPressHandler {
     this.singlePressTimer = null
   }
 
-  // Handle a key press for a specific command
-  handleKeyPress() {
+  // Handle a key press for a specific command.
+  // Any arguments are passed on to the action.
+  handleKeyPress(...args) {
 
     const now = Date.now();
     
@@ -27,7 +28,7 @@ export default class KeyPressHandler {
     
     if (isDoublePress) {
       this.lastPressTime = null;
-      this.doublePressAction();
+      this.doublePressAction(...args);
     } else {
       // This might be a single press, but wait to see if there's a second press
       this.lastPressTime = now;
@@ -35,7 +36,7 @@ export default class KeyPressHandler {
       this.singlePressTimer = setTimeout(() => {
         // No second press came within the threshold, execute the single press action.
         this.singlePressTimer = null;
-        this.singlePressAction();
+        this.singlePressAction(...args);
       }, DOUBLE_PRESS_THRESHOLD);
     }
   }

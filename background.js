@@ -114,8 +114,13 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 
 // Handle when the active tab changes to update our tracking.
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  await onTabActivated(activeInfo.tabId);
+chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
+  // Ignore activations in unfocused windows. If the window gains focus later,
+  // onFocusChanged records its active tab.
+  const window = await chrome.windows.get(windowId);
+  if (window.focused) {
+    await onTabActivated(tabId);
+  }
 });
 
 
@@ -136,21 +141,26 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 });
 
 // Listen for the keyboard shortcut.
-const keyPressHandler = new KeyPressHandler(
+const lastTabKeyPressHandler = new KeyPressHandler(
   () => { switchToLastTab(false); },
   () => { switchToLastTab(true); }
 );
-chrome.commands.onCommand.addListener((command) => {
+const splitViewKeyPressHandler = new KeyPressHandler(toggleSplitView, swapSplitViewSides);
+chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'switch-to-last-tab') {
-    keyPressHandler.handleKeyPress();
+    lastTabKeyPressHandler.handleKeyPress();
   } else if (command === 'close-tabs-without-recent-activity') {
     closeTabsWithoutRecentActivity();
+  } else if (command === 'toggle-split-view') {
+    splitViewKeyPressHandler.handleKeyPress(tab);
   }
 });
 
 
-async function switchToLastTab(doublePress) {
-  
+// Determines which tab switching to the last tab would activate.
+// Returns null if the request should be ignored.
+async function findSwitchTarget(doublePress) {
+
   const recentTabs = await getRecentTabs();
   const lastActiveTabId = await getLastActiveTab();
   const lastActiveTabIndex = recentTabs.findIndex(tab => tab.tabId === lastActiveTabId);
@@ -159,7 +169,7 @@ async function switchToLastTab(doublePress) {
   // This should never happen.
   if (lastActiveTabIndex < 0) {
     console.error('Last active tab not found in history. Ignoring request.');
-    return;
+    return null;
   }
 
   // Check if any window is focused.
@@ -193,9 +203,21 @@ async function switchToLastTab(doublePress) {
     console.error('Target tab not found. Removing from history and trying again.');
     recentTabs.remove({ tabId: newActiveTabId });
     await setRecentTabs(recentTabs);
-    switchToLastTab(doublePress);
+    return findSwitchTarget(doublePress);
+  }
+
+  return { recentTabs, lastActiveTabIndex, newActiveTabIndex, newActiveTab };
+}
+
+
+async function switchToLastTab(doublePress) {
+
+  const target = await findSwitchTarget(doublePress);
+  if (!target) {
     return;
   }
+  const { recentTabs, lastActiveTabIndex, newActiveTabIndex, newActiveTab } = target;
+  const newActiveTabId = newActiveTab.id;
 
   // If it's a single press and we're going forward in history,
   // move the last active tab to second position in the queue,
@@ -214,6 +236,85 @@ async function switchToLastTab(doublePress) {
   // from the window to be added to the history.
   await chrome.tabs.update(newActiveTabId, { active: true });
   await chrome.windows.update(newActiveTab.windowId, { focused: true });
+}
+
+
+// Dissolves the split view containing the given tab. If the tab is not part of
+// a split view, creates one with the tab on the left and the tab that switching
+// to the last tab would activate on the right.
+async function toggleSplitView(tab) {
+
+  const sibling = await getSplitViewSibling(tab);
+  if (sibling) {
+    await chrome.tabs.unsplit(tab.splitViewId);
+
+    // Restore the sibling in history, which only keeps the active pane of a
+    // split view, so that switching goes to it and toggling again re-creates the split.
+    const recentTabs = await getRecentTabs();
+    recentTabs.addFirst({ tabId: sibling.id, windowId: sibling.windowId });
+    recentTabs.addFirst({ tabId: tab.id, windowId: tab.windowId });
+    await setRecentTabs(recentTabs);
+    return;
+  }
+
+  const target = await findSwitchTarget(false);
+  if (!target || target.newActiveTab.id === tab.id) {
+    return;
+  }
+  const targetId = target.newActiveTab.id;
+
+  if (await getSplitViewSibling(target.newActiveTab)) {
+    await chrome.tabs.unsplit(target.newActiveTab.splitViewId);
+  }
+
+  // Both tabs must share the same window, pinned state and group.
+  if (target.newActiveTab.windowId !== tab.windowId) {
+    await chrome.tabs.move(targetId, { windowId: tab.windowId, index: -1 });
+  }
+  if (target.newActiveTab.pinned !== tab.pinned) {
+    await chrome.tabs.update(targetId, { pinned: tab.pinned });
+  }
+  if (target.newActiveTab.groupId !== tab.groupId) {
+    if (tab.groupId < 0) {
+      await chrome.tabs.ungroup(targetId);
+    } else {
+      await chrome.tabs.group({ groupId: tab.groupId, tabIds: targetId });
+    }
+  }
+
+  // Both tabs must be adjacent. The steps above may have changed their indexes.
+  const [currentTab, targetTab] = await Promise.all([
+    chrome.tabs.get(tab.id),
+    chrome.tabs.get(targetId),
+  ]);
+  const index = targetTab.index < currentTab.index ? currentTab.index : currentTab.index + 1;
+  await chrome.tabs.move(targetId, { index });
+
+  await chrome.tabs.createSplit([tab.id, targetId]);
+
+  // Keep only the active pane in history, as in onTabActivated.
+  const recentTabs = await getRecentTabs();
+  recentTabs.remove({ tabId: targetId });
+  await setRecentTabs(recentTabs);
+}
+
+
+// Switches the sides of the split view containing the given tab and keeps the
+// tab active. Does nothing if the tab is not part of a split view.
+async function swapSplitViewSides(tab) {
+
+  const sibling = await getSplitViewSibling(tab);
+  if (!sibling) {
+    return;
+  }
+
+  await chrome.tabs.unsplit(tab.splitViewId);
+
+  // Moving the sibling to the tab's index swaps them from either side.
+  await chrome.tabs.move(sibling.id, { index: tab.index });
+
+  await chrome.tabs.createSplit([tab.id, sibling.id]);
+  await chrome.tabs.update(tab.id, { active: true });
 }
 
 
