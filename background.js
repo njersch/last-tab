@@ -330,16 +330,23 @@ async function closeTabsWithoutRecentActivity() {
   const siblings = await Promise.all(tabsInWindow.map(getSplitViewSibling));
 
   const threshold = Date.now() - STALE_TAB_THRESHOLD * 60 * 1000;
+  const isStale = (tab) => !tab.active && tab.lastAccessed < threshold;
   const staleTabs = tabsInWindow.filter((tab, i) => {
     const sibling = siblings[i];
     return (
-      !tab.active &&
+      isStale(tab) &&
       !tab.pinned &&
       (!tab.groupId || tab.groupId < 0) &&
-      tab.lastAccessed < threshold &&
       (!sibling || sibling.lastAccessed < threshold)
     );
   });
 
   await chrome.tabs.remove(staleTabs.map((tab) => tab.id));
+
+  // Collapse groups in which all tabs are stale.
+  const groups = await chrome.tabGroups.query({ windowId: currentWindow.id, collapsed: false });
+  const staleGroups = groups.filter((group) =>
+    tabsInWindow.filter((tab) => tab.groupId === group.id).every(isStale)
+  );
+  await Promise.all(staleGroups.map((group) => chrome.tabGroups.update(group.id, { collapsed: true })));
 }
