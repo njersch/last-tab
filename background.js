@@ -56,6 +56,12 @@ async function getSplitViewSibling(tab) {
 // Handler for when the active tab changes.
 async function onTabActivated(tabId) {
 
+  // Ignore the tab if it was closed in the meantime.
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab) {
+    return;
+  }
+
   const lastActiveTab = await getLastActiveTab();
 
   // Don't update the last active tab if it's the same as the current tab.
@@ -79,7 +85,6 @@ async function onTabActivated(tabId) {
   if (lastActiveTabIndex >= 0) {
     recentTabs.addFirst(recentTabs.at(lastActiveTabIndex));
   }
-  const tab = await chrome.tabs.get(tabId);
   recentTabs.addFirst({ tabId, windowId: tab.windowId });
 
   // Treat a split view as a single tab: keep only the active pane in history
