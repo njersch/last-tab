@@ -14,6 +14,10 @@ const LAST_ACTIVE_TAB_KEY = 'lastActiveTab';
 // Threshold for stale tabs in minutes.
 const STALE_TAB_THRESHOLD = 5;
 
+// Key for property storing, per split view created by this extension,
+// the previous position of the tab that was moved into it.
+const SPLIT_VIEWS_KEY = 'splitViews';
+
 
 // Getter function for recent tabs.
 async function getRecentTabs() {
@@ -39,6 +43,31 @@ async function getLastActiveTab() {
 // Setter function for ID of last active tab.
 async function setLastActiveTab(tabId) {
   await chrome.storage.local.set({ [LAST_ACTIVE_TAB_KEY]: tabId });
+}
+
+
+// Getter function for previous positions of tabs moved into split views.
+async function getSplitViews() {
+  const result = await chrome.storage.local.get(SPLIT_VIEWS_KEY);
+  return result[SPLIT_VIEWS_KEY] || {};
+}
+
+
+// Setter function for previous positions of tabs moved into split views.
+// Drops entries of split views that no longer exist.
+async function setSplitViews(splitViews) {
+  const tabs = await chrome.tabs.query({});
+  const splitViewIds = new Set(tabs.map(tab => tab.splitViewId));
+  const existing = Object.entries(splitViews).filter(([id]) => splitViewIds.has(Number(id)));
+  await chrome.storage.local.set({ [SPLIT_VIEWS_KEY]: Object.fromEntries(existing) });
+}
+
+
+// Returns the previous position of the tab moved into the given split view,
+// or null if there is none or it belongs to tabs no longer in that split view.
+async function getSplitViewRecord(splitViewId, tabIds) {
+  const record = (await getSplitViews())[splitViewId];
+  return record && tabIds.includes(record.tabId) ? record : null;
 }
 
 
@@ -251,7 +280,11 @@ async function toggleSplitView(tab) {
 
   const sibling = await getSplitViewSibling(tab);
   if (sibling) {
+    const record = await getSplitViewRecord(tab.splitViewId, [tab.id, sibling.id]);
     await chrome.tabs.unsplit(tab.splitViewId);
+    if (record) {
+      await restoreTabPosition(record);
+    }
 
     // Restore the sibling in history, which only keeps the active pane of a
     // split view, so that switching goes to it and toggling again re-creates the split.
@@ -268,18 +301,43 @@ async function toggleSplitView(tab) {
   }
   const targetId = target.newActiveTab.id;
 
-  if (await getSplitViewSibling(target.newActiveTab)) {
+  // If the target was moved into its current split view, keep its original position.
+  // Otherwise, move the other tab of that split view back to its previous position.
+  let record = null;
+  const targetSibling = await getSplitViewSibling(target.newActiveTab);
+  if (targetSibling) {
+    const oldRecord = await getSplitViewRecord(target.newActiveTab.splitViewId, [targetId, targetSibling.id]);
     await chrome.tabs.unsplit(target.newActiveTab.splitViewId);
+    if (oldRecord?.tabId === targetId) {
+      record = oldRecord;
+    } else if (oldRecord) {
+      await restoreTabPosition(oldRecord);
+    }
+  }
+
+  // Remember the target's position to restore it when the split view is dissolved.
+  const targetTab = await chrome.tabs.get(targetId);
+  if (!record) {
+    const tabsInWindow = await chrome.tabs.query({ windowId: targetTab.windowId });
+    const i = tabsInWindow.findIndex(t => t.id === targetId);
+    record = {
+      tabId: targetId,
+      windowId: targetTab.windowId,
+      pinned: targetTab.pinned,
+      groupId: targetTab.groupId,
+      leftId: tabsInWindow[i - 1]?.id ?? null,
+      rightId: tabsInWindow[i + 1]?.id ?? null,
+    };
   }
 
   // Both tabs must share the same window, pinned state and group.
-  if (target.newActiveTab.windowId !== tab.windowId) {
+  if (targetTab.windowId !== tab.windowId) {
     await chrome.tabs.move(targetId, { windowId: tab.windowId, index: -1 });
   }
-  if (target.newActiveTab.pinned !== tab.pinned) {
+  if (targetTab.pinned !== tab.pinned) {
     await chrome.tabs.update(targetId, { pinned: tab.pinned });
   }
-  if (target.newActiveTab.groupId !== tab.groupId) {
+  if (targetTab.groupId !== tab.groupId) {
     if (tab.groupId < 0) {
       await chrome.tabs.ungroup(targetId);
     } else {
@@ -288,19 +346,71 @@ async function toggleSplitView(tab) {
   }
 
   // Both tabs must be adjacent. The steps above may have changed their indexes.
-  const [currentTab, targetTab] = await Promise.all([
-    chrome.tabs.get(tab.id),
-    chrome.tabs.get(targetId),
-  ]);
-  const index = targetTab.index < currentTab.index ? currentTab.index : currentTab.index + 1;
-  await chrome.tabs.move(targetId, { index });
+  await moveNextTo(targetId, await chrome.tabs.get(tab.id), 'right');
 
-  await chrome.tabs.createSplit([tab.id, targetId]);
+  const splitViewId = await chrome.tabs.createSplit([tab.id, targetId]);
+
+  const splitViews = await getSplitViews();
+  splitViews[splitViewId] = record;
+  await setSplitViews(splitViews);
 
   // Keep only the active pane in history, as in onTabActivated.
   const recentTabs = await getRecentTabs();
   recentTabs.remove({ tabId: targetId });
   await setRecentTabs(recentTabs);
+}
+
+
+// Moves a tab directly to the right or left of the anchor tab in the same window.
+// If the anchor is part of a split view, moves it next to the whole split view.
+async function moveNextTo(tabId, anchor, side) {
+  const tab = await chrome.tabs.get(tabId);
+  const sibling = await getSplitViewSibling(anchor);
+  const anchorIndex = sibling
+    ? (side === 'right' ? Math.max : Math.min)(anchor.index, sibling.index)
+    : anchor.index;
+  const index = side === 'right'
+    ? (tab.index < anchorIndex ? anchorIndex : anchorIndex + 1)
+    : (tab.index < anchorIndex ? anchorIndex - 1 : anchorIndex);
+  await chrome.tabs.move(tabId, { index });
+}
+
+
+// Moves a tab back to the position it had before it was moved into a split view,
+// next to one of its previous neighbours. Leaves the tab where it is if neither
+// neighbour is still in the previous window, or if the tab is active and would
+// have to move to another window.
+async function restoreTabPosition(record) {
+
+  const tab = await chrome.tabs.get(record.tabId).catch(() => null);
+  if (!tab || (tab.active && tab.windowId !== record.windowId)) {
+    return;
+  }
+
+  const neighbours = await Promise.all(
+    [record.leftId, record.rightId].map(id => id === null ? null : chrome.tabs.get(id).catch(() => null))
+  );
+  const i = neighbours.findIndex(n => n && n.id !== tab.id && n.windowId === record.windowId);
+  if (i < 0) {
+    return;
+  }
+
+  if (tab.windowId !== record.windowId) {
+    await chrome.tabs.move(tab.id, { windowId: record.windowId, index: -1 });
+  }
+  if (tab.pinned !== record.pinned) {
+    await chrome.tabs.update(tab.id, { pinned: record.pinned });
+  }
+  const group = record.groupId < 0 ? null : await chrome.tabGroups.get(record.groupId).catch(() => null);
+  if (group && group.windowId === record.windowId) {
+    await chrome.tabs.group({ groupId: group.id, tabIds: tab.id });
+  } else if (tab.groupId >= 0) {
+    await chrome.tabs.ungroup(tab.id);
+  }
+
+  // The steps above may have changed the neighbour's index.
+  const neighbour = await chrome.tabs.get(neighbours[i].id);
+  await moveNextTo(tab.id, neighbour, i === 0 ? 'right' : 'left');
 }
 
 
@@ -313,13 +423,22 @@ async function swapSplitViewSides(tab) {
     return;
   }
 
+  const splitViews = await getSplitViews();
+  const record = splitViews[tab.splitViewId];
+
   await chrome.tabs.unsplit(tab.splitViewId);
 
   // Moving the sibling to the tab's index swaps them from either side.
   await chrome.tabs.move(sibling.id, { index: tab.index });
 
-  await chrome.tabs.createSplit([tab.id, sibling.id]);
+  const splitViewId = await chrome.tabs.createSplit([tab.id, sibling.id]);
   await chrome.tabs.update(tab.id, { active: true });
+
+  // Re-creating the split view changed its ID.
+  if (record) {
+    splitViews[splitViewId] = record;
+    await setSplitViews(splitViews);
+  }
 }
 
 
